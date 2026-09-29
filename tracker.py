@@ -1,4 +1,7 @@
 import os
+import datetime as dt
+from zoneinfo import ZoneInfo
+
 import requests
 import yfinance as yf
 
@@ -38,22 +41,41 @@ DATA = {
 # ===========================================
 
 
-def get_price(ticker):
+def get_quote(ticker):
+    """回傳 (最新收盤價, 漲跌幅%, PE)，抓不到就回傳 None。"""
     try:
         t = yf.Ticker(ticker)
-        price = t.fast_info["last_price"]
-        pe = t.info.get("trailingPE")
-        pe_text = f"{pe:.1f}" if pe else "-"
-        return f"{price:.1f}", pe_text
+        hist = t.history(period="7d")["Close"].dropna()
+        last, prev = float(hist.iloc[-1]), float(hist.iloc[-2])
+        pct = (last - prev) / prev * 100
+        try:
+            pe = t.info.get("trailingPE")
+        except Exception:
+            pe = None
+        return last, pct, pe
     except Exception:
-        return "-", "-"
+        return None, None, None
 
 
-def build_message():
-    lines = ["📊 投資追蹤表"]
+def build_daily(now):
+    lines = [f"📈 開盤簡報 {now:%m/%d}（前一交易日收盤）"]
     for code, d in DATA.items():
-        price, pe = get_price(d["ticker"])
-        lines.append(f"\n【{code} {d['name']}】股價 {price}｜PE {pe}")
+        price, pct, _ = get_quote(d["ticker"])
+        if price is None:
+            lines.append(f"{code} {d['name']}：資料取得失敗")
+            continue
+        icon = "🔺" if pct > 0 else "🔻" if pct < 0 else "➖"
+        lines.append(f"{icon} {code} {d['name']}  {price:.1f}（{pct:+.2f}%）")
+    return "\n".join(lines)
+
+
+def build_full():
+    lines = ["📊 每週投資追蹤表"]
+    for code, d in DATA.items():
+        price, _, pe = get_quote(d["ticker"])
+        price_text = f"{price:.1f}" if price is not None else "-"
+        pe_text = f"{pe:.1f}" if pe else "-"
+        lines.append(f"\n【{code} {d['name']}】股價 {price_text}｜PE {pe_text}")
         for metric, v in d["metrics"].items():
             lines.append(
                 f"• {metric}\n"
@@ -70,4 +92,8 @@ def send(text):
 
 
 if __name__ == "__main__":
-    send(build_message())
+    now = dt.datetime.now(ZoneInfo("Asia/Taipei"))
+    send(build_daily(now))
+    # 週一（或設定環境變數 FULL=1）多送一份完整季度表
+    if now.weekday() == 0 or os.environ.get("FULL") == "1":
+        send(build_full())
